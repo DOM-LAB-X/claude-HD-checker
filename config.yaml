@@ -1,0 +1,30 @@
+timezone: Pacific/Honolulu
+
+stores:
+  - "1701"
+  - "1702"
+  - "1706"
+  - "1707"
+
+zip_code: "96819"
+
+schedule:
+  times: ["01:00", "09:00", "17:00"]   # local time, per `timezone`
+  jitter_minutes: 20
+
+delays:
+  between_products_sec: [5, 10]
+  between_stores_sec: [10, 20]
+
+limits:
+  max_retries_per_product: 1
+
+alerts:
+  min_savings_pct: 30
+  min_savings_amount: 5000   # cents ($50.00)
+  inter_store_diff_pct: 15
+  observation_only: true     # if true, detect and log change events but do not send notifications
+  discord_webhook_url: ""    # paste a Discord webhook URL to enable alerts (or set via the app's Settings window)
+
+watchlist_path: "watchlist.txt"
+db_path: "data/tracker.sqlite3"
