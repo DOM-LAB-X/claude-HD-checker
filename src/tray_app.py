@@ -5,16 +5,32 @@ tray icon with quick actions (run now, settings, open data folder, quit).
 This is the entry point used when packaged into a Windows .exe or macOS .app
 via build_exe.bat / build_mac.sh.
 """
+import sys
+from pathlib import Path
+
+# ── macOS subprocess mode ─────────────────────────────────────────────────────
+# AppKit's NSApplication.run() must execute on the main thread, which pystray
+# occupies below. To avoid the crash ("NSUpdateCycleInitialize() is called off
+# the main thread"), the settings window runs in a separate child process that
+# owns its own tkinter main loop. Detect that mode here before any heavy imports.
+if "--settings" in sys.argv:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from src.gui import open_settings_window
+    open_settings_window().mainloop()
+    sys.exit(0)
+
+# ── Normal startup ────────────────────────────────────────────────────────────
 import asyncio
 import os
 import platform
 import random
 import subprocess
-import sys
 import threading
 import time
 import tkinter as tk
-from pathlib import Path
+
+import pystray
+from PIL import Image
 
 # When bundled with PyInstaller, point Playwright at the bundled webkit binary
 # (included in the bundle via --add-data in the build scripts).
@@ -22,9 +38,6 @@ if getattr(sys, "frozen", False):
     _bundled_browsers = Path(sys._MEIPASS) / "playwright-browsers"
     if _bundled_browsers.exists():
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_bundled_browsers))
-
-import pystray
-from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -86,17 +99,26 @@ def open_data_folder(icon=None, item=None):
 
 
 def open_settings(icon=None, item=None):
-    # Tkinter windows must be created on the main thread; pystray calls menu
-    # actions from its own thread, so hand off via root.after().
     log.info("Opening settings window")
-    root.after(0, lambda: open_settings_window(root))
+    if platform.system() == "Darwin":
+        # pystray runs AppKit on the main thread on macOS, so tkinter's mainloop
+        # cannot run concurrently. Open the settings window as a child process
+        # that owns its own main loop instead.
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable, "--settings"])
+        else:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--settings"])
+    else:
+        root.after(0, lambda: open_settings_window(root))
 
 
 def quit_app(icon, item):
     log.info("Quitting")
     scheduler.shutdown(wait=False)
     icon.stop()
-    root.after(0, root.quit)
+    if platform.system() != "Darwin":
+        # On Windows/Linux, stop the tkinter main loop too.
+        root.after(0, root.quit)
 
 
 def do_update(icon, item):
@@ -143,10 +165,17 @@ def build_menu():
 scheduler = BackgroundScheduler(timezone=startup_config.timezone)
 for time_str in startup_config.schedule_times:
     hour, minute = time_str.split(":")
-    scheduler.add_job(_run_cycle_sync, CronTrigger(hour=int(hour), minute=int(minute)), kwargs={"jitter": True})
+    scheduler.add_job(
+        _run_cycle_sync, CronTrigger(hour=int(hour), minute=int(minute)), kwargs={"jitter": True}
+    )
 
-root = tk.Tk()
-root.withdraw()  # no main window - tray icon + on-demand settings window only
+# On macOS, pystray's icon.run() occupies the main thread (AppKit requirement),
+# so a tkinter root is not needed in the main process.
+if platform.system() != "Darwin":
+    root = tk.Tk()
+    root.withdraw()  # no main window — tray icon + on-demand settings window only
+else:
+    root = None
 
 
 def main():
@@ -168,9 +197,17 @@ def main():
             log.exception("Failed to show startup notification")
 
     start_background_check(_on_update_found)
-    threading.Thread(target=icon.run, kwargs={"setup": _on_setup}, daemon=True).start()
-    log.info("Entering main loop")
-    root.mainloop()
+
+    if platform.system() == "Darwin":
+        # AppKit requires NSApplication.run() on the main thread.
+        # icon.run() blocks here until icon.stop() is called.
+        log.info("Entering main loop (macOS/AppKit)")
+        icon.run(setup=_on_setup)
+    else:
+        threading.Thread(target=icon.run, kwargs={"setup": _on_setup}, daemon=True).start()
+        log.info("Entering main loop")
+        root.mainloop()
+
     log.info("Main loop exited")
 
 
