@@ -14,6 +14,15 @@ from pathlib import Path
 # the main thread"), the settings window runs in a separate child process that
 # owns its own tkinter main loop. Detect that mode here before any heavy imports.
 if "--settings" in sys.argv:
+    # Apply the same SSL fix as the main process so webhook tests work.
+    if getattr(sys, "frozen", False):
+        try:
+            import certifi as _certifi
+            import os as _os
+            _os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
+            _os.environ.setdefault("REQUESTS_CA_BUNDLE", _certifi.where())
+        except ImportError:
+            pass
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from src.gui import open_settings_window
     open_settings_window().mainloop()

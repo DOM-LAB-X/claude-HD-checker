@@ -85,22 +85,16 @@ pyinstaller --noconfirm --onedir --windowed --name "HD-Tracker" \
     $WEBKIT_FLAG \
     --collect-all greenlet \
     --collect-all playwright \
-    --hidden-import "pystray._darwin" \
-    --hidden-import "Quartz" \
-    --hidden-import "AppKit" \
-    src/tray_app.py
+    src/mac_app.py
 
 if [ $? -ne 0 ]; then
     echo "Build failed — see errors above."
     exit 1
 fi
 
-# ── Post-process: hide from Dock, set bundle ID ───────────────────────────────
+# ── Post-process: set bundle ID (no LSUIElement — app shows in Dock) ──────────
 PLIST="dist/HD-Tracker.app/Contents/Info.plist"
 echo "Configuring app bundle..."
-# Hide the Dock icon — this is a menu-bar-only app
-/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null || \
-    /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.domlab.hd-tracker" "$PLIST" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.domlab.hd-tracker" "$PLIST" 2>/dev/null || true
 

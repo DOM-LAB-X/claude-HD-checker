@@ -93,16 +93,11 @@ jobs:
             $WEBKIT_FLAG \
             --collect-all greenlet \
             --collect-all playwright \
-            --hidden-import "pystray._darwin" \
-            --hidden-import "Quartz" \
-            --hidden-import "AppKit" \
-            src/tray_app.py
+            src/mac_app.py
 
       - name: Configure app bundle
         run: |
           PLIST="dist/HD-Tracker.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null || \
-            /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.domlab.hd-tracker" "$PLIST" 2>/dev/null || \
             /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.domlab.hd-tracker" "$PLIST" 2>/dev/null || true
 

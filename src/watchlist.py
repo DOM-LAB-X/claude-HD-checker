@@ -24,21 +24,47 @@ def _extract_internet_number(url: str) -> str:
     return match.group(1)
 
 
-def validate_product_url(url: str) -> str:
-    """Validate a watchlist URL: must be a homedepot.com /p/.../<itemId> link.
+def normalize_product_input(raw: str) -> str:
+    """Accept a bare item number or any Home Depot product URL.
 
-    Raises InvalidProductUrlError if invalid. Returns the normalized URL.
-    Restricting to this host/path prevents the browser automation from being
-    pointed at arbitrary (potentially malicious) sites via watchlist entries.
+    Returns a clean canonical URL: https://www.homedepot.com/p/<item_id>
+    This means users can paste:
+      - Just the item number:   301424967
+      - A clean product URL:    https://www.homedepot.com/p/Name/301424967
+      - An affiliate/tracking URL that contains the item number anywhere
+
+    Raises InvalidProductUrlError if no valid item number can be found.
     """
-    url = url.strip()
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.netloc.lower() not in ALLOWED_HOSTS:
-        raise InvalidProductUrlError("URL must be an https://www.homedepot.com link")
-    if "/p/" not in parsed.path:
-        raise InvalidProductUrlError("URL must be a product page (contains /p/)")
-    _extract_internet_number(url)  # raises if no trailing Internet #
-    return url
+    raw = raw.strip()
+    if not raw:
+        raise InvalidProductUrlError("Please enter an item number or URL.")
+
+    # Bare numeric item number (Home Depot item #s are 6–9 digits)
+    if re.match(r"^\d{6,9}$", raw):
+        return f"https://www.homedepot.com/p/{raw}"
+
+    # Try to parse as a URL
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+
+    if parsed.netloc.lower() not in ALLOWED_HOSTS:
+        raise InvalidProductUrlError(
+            "Paste an item number (e.g. 301424967) or a homedepot.com product URL."
+        )
+
+    # Extract the item number from the URL path — it is the trailing numeric segment
+    match = re.search(r"/(\d{6,9})(?:[/?#]|$)", parsed.path)
+    if not match:
+        raise InvalidProductUrlError(
+            "Couldn't find a Home Depot item number in that URL.\n"
+            "Try pasting just the item number instead (e.g. 301424967)."
+        )
+
+    return f"https://www.homedepot.com/p/{match.group(1)}"
+
+
+def validate_product_url(raw: str) -> str:
+    """Normalize and validate a watchlist entry. Returns the canonical URL."""
+    return normalize_product_input(raw)
 
 
 def load_watchlist(path: str) -> List[WatchlistEntry]:
@@ -53,7 +79,7 @@ def load_watchlist(path: str) -> List[WatchlistEntry]:
 
 
 def write_watchlist(path: str, urls: List[str]) -> None:
-    lines = ["# One product URL per line. Lines starting with # are ignored."]
+    lines = ["# One Home Depot item # or URL per line. Lines starting with # are ignored."]
     for url in urls:
         lines.append(validate_product_url(url))
     Path(path).write_text("\n".join(lines) + "\n")
