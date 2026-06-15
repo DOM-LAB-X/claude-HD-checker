@@ -13,11 +13,11 @@ from tkinter import messagebox, ttk
 
 # ── Frozen-app setup (must run before any network/playwright imports) ─────────
 if getattr(sys, "frozen", False):
-    # Use a user-writable directory for the Playwright browser; we install it
-    # automatically on first launch instead of bundling it in the .app.
-    _browsers_dir = Path.home() / "Library" / "Application Support" / "HD-Tracker" / "browsers"
+    # Use the standard playwright browser cache so that `playwright install webkit`
+    # (run by the user or by our auto-install) is found without any extra steps.
+    _browsers_dir = Path.home() / "Library" / "Caches" / "ms-playwright"
     _browsers_dir.mkdir(parents=True, exist_ok=True)
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_browsers_dir)
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_browsers_dir))
     # Fix SSL certificate verification — PyInstaller loses the system CA bundle.
     try:
         import certifi
@@ -64,21 +64,30 @@ def _ensure_webkit() -> bool:
         log.info("webkit already installed at %s", browsers_dir)
         return True
 
-    driver = Path(sys._MEIPASS) / "playwright" / "driver" / "playwright"
-    if not driver.exists():
-        log.warning("playwright driver not found in bundle: %s", driver)
-        return False
-
-    try:
-        os.chmod(driver, 0o755)
-    except Exception:
-        pass
+    # Prefer the playwright driver bundled inside the .app, fall back to
+    # whatever the user has on their PATH (e.g. from `pip install playwright`).
+    bundled = Path(sys._MEIPASS) / "playwright" / "driver" / "playwright"
+    if bundled.exists():
+        try:
+            os.chmod(bundled, 0o755)
+        except Exception:
+            pass
+        install_cmd = [str(bundled), "install", "webkit"]
+    else:
+        import shutil as _shutil
+        system_pw = _shutil.which("playwright")
+        if system_pw:
+            log.info("bundled driver not found, using system playwright: %s", system_pw)
+            install_cmd = [system_pw, "install", "webkit"]
+        else:
+            log.warning("playwright not found (bundled: %s, system: not in PATH)", bundled)
+            return False
 
     log.info("Installing webkit to %s", browsers_dir)
     try:
         env = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(browsers_dir)}
         result = subprocess.run(
-            [str(driver), "install", "webkit"],
+            install_cmd,
             env=env,
             capture_output=True,
             timeout=300,
