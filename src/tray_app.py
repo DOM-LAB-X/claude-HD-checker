@@ -26,11 +26,14 @@ from apscheduler.triggers.cron import CronTrigger
 from src.config import BUNDLE_DIR, PROJECT_ROOT, load_config
 from src.gui import open_settings_window
 from src.run_cycle import run_cycle
+from src.updater import apply_update, start_background_check
 
 ICON_PATH = BUNDLE_DIR / "icon.ico"
 
 startup_config = load_config()
 status = {"text": "Idle", "running": False}
+update_state = {"available": False, "version": ""}
+_icon_ref = None  # set in main() so background threads can call notify/update_menu
 
 
 def _run_cycle_sync(jitter=False):
@@ -80,9 +83,37 @@ def quit_app(icon, item):
     root.after(0, root.quit)
 
 
+def do_update(icon, item):
+    def _apply():
+        try:
+            apply_update(on_progress=lambda msg: status.__setitem__("text", msg))
+            quit_app(icon, item)
+        except Exception as e:
+            status["text"] = f"Update failed: {e}"
+    threading.Thread(target=_apply, daemon=True).start()
+
+
+def _on_update_found(version: str):
+    update_state["available"] = True
+    update_state["version"] = version
+    if _icon_ref is not None:
+        try:
+            _icon_ref.notify(
+                f"Version {version} is available. Open the tray menu to install.",
+                "HD Tracker update available",
+            )
+        except Exception:
+            pass
+
+
 def build_menu():
     return pystray.Menu(
         pystray.MenuItem(lambda item: f"Status: {status['text']}", None, enabled=False),
+        pystray.MenuItem(
+            lambda item: f"Update available ({update_state['version']}) — click to install",
+            do_update,
+            visible=lambda item: update_state["available"],
+        ),
         pystray.MenuItem("Run check now", run_now),
         pystray.MenuItem("Manage watchlist & alerts", open_settings),
         pystray.MenuItem("Open data folder", open_data_folder),
@@ -100,9 +131,12 @@ root.withdraw()  # no main window - tray icon + on-demand settings window only
 
 
 def main():
+    global _icon_ref
     scheduler.start()
     image = Image.open(ICON_PATH)
     icon = pystray.Icon("HD Clearance Tracker", image, "HD Clearance Tracker", menu=build_menu())
+    _icon_ref = icon
+    start_background_check(_on_update_found)
     threading.Thread(target=icon.run, daemon=True).start()
     root.mainloop()
 
