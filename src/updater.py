@@ -16,6 +16,10 @@ import zipfile
 from pathlib import Path
 from threading import Thread
 
+from src.logging_setup import get_logger
+
+log = get_logger()
+
 GITHUB_REPO = "DOM-LAB-X/claude-HD-checker"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASE_ASSET_NAME = "HD-Tracker.zip"
@@ -62,7 +66,7 @@ def check_for_update() -> dict | None:
             _update_info = {"version": tag, "download_url": download_url}
             return _update_info
     except Exception:
-        pass
+        log.exception("Update check failed")
     return None
 
 
@@ -134,5 +138,6 @@ def apply_update(on_progress=None) -> None:
         )
 
     except Exception:
+        log.exception("Failed to apply update")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise

@@ -20,6 +20,10 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.logging_setup import setup_logging
+
+log = setup_logging()
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -30,6 +34,7 @@ from src.updater import apply_update, start_background_check
 
 ICON_PATH = BUNDLE_DIR / "icon.ico"
 
+log.info("Starting HD Clearance Tracker, loading config...")
 startup_config = load_config()
 status = {"text": "Idle", "running": False}
 update_state = {"available": False, "version": ""}
@@ -52,6 +57,7 @@ def _run_cycle_sync(jitter=False):
         asyncio.run(run_cycle(config))
         status["text"] = "Idle (last run OK)"
     except Exception as e:
+        log.exception("Run cycle failed")
         status["text"] = f"Idle (last run failed: {e})"
     finally:
         status["running"] = False
@@ -74,10 +80,12 @@ def open_data_folder(icon=None, item=None):
 def open_settings(icon=None, item=None):
     # Tkinter windows must be created on the main thread; pystray calls menu
     # actions from its own thread, so hand off via root.after().
+    log.info("Opening settings window")
     root.after(0, lambda: open_settings_window(root))
 
 
 def quit_app(icon, item):
+    log.info("Quitting")
     scheduler.shutdown(wait=False)
     icon.stop()
     root.after(0, root.quit)
@@ -86,14 +94,17 @@ def quit_app(icon, item):
 def do_update(icon, item):
     def _apply():
         try:
+            log.info("Applying update to %s", update_state["version"])
             apply_update(on_progress=lambda msg: status.__setitem__("text", msg))
             quit_app(icon, item)
         except Exception as e:
+            log.exception("Update failed")
             status["text"] = f"Update failed: {e}"
     threading.Thread(target=_apply, daemon=True).start()
 
 
 def _on_update_found(version: str):
+    log.info("Update available: %s", version)
     update_state["available"] = True
     update_state["version"] = version
     if _icon_ref is not None:
@@ -103,7 +114,7 @@ def _on_update_found(version: str):
                 "HD Tracker update available",
             )
         except Exception:
-            pass
+            log.exception("Failed to show update notification")
 
 
 def build_menu():
@@ -132,14 +143,32 @@ root.withdraw()  # no main window - tray icon + on-demand settings window only
 
 def main():
     global _icon_ref
+    log.info("Starting scheduler (%s)", startup_config.schedule_times)
     scheduler.start()
+
+    log.info("Creating tray icon")
     image = Image.open(ICON_PATH)
     icon = pystray.Icon("HD Clearance Tracker", image, "HD Clearance Tracker", menu=build_menu())
     _icon_ref = icon
+
+    def _on_setup(icon):
+        icon.visible = True
+        log.info("Tray icon ready")
+        try:
+            icon.notify("HD Clearance Tracker is running.", "HD Clearance Tracker")
+        except Exception:
+            log.exception("Failed to show startup notification")
+
     start_background_check(_on_update_found)
-    threading.Thread(target=icon.run, daemon=True).start()
+    threading.Thread(target=icon.run, kwargs={"setup": _on_setup}, daemon=True).start()
+    log.info("Entering main loop")
     root.mainloop()
+    log.info("Main loop exited")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        log.exception("Fatal error")
+        raise
