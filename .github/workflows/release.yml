@@ -30,11 +30,6 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright WebKit
-        run: |
-          source venv/bin/activate
-          playwright install webkit
-
       - name: Generate icon.icns
         run: |
           source venv/bin/activate
@@ -68,21 +63,9 @@ jobs:
           done
           iconutil -c icns /tmp/hd_icon.iconset -o icon.icns || cp /tmp/hd_icon_src.png icon.icns
 
-      - name: Find WebKit path
-        id: webkit
-        run: |
-          MS_CACHE="${HOME}/.cache/ms-playwright"
-          WEBKIT_DIR=$(ls -d "${MS_CACHE}/webkit-"* 2>/dev/null | sort -V | tail -1)
-          echo "path=${WEBKIT_DIR}" >> "$GITHUB_OUTPUT"
-          echo "name=$(basename "$WEBKIT_DIR")" >> "$GITHUB_OUTPUT"
-
       - name: Build HD-Tracker.app
         run: |
           source venv/bin/activate
-          WEBKIT_FLAG=""
-          if [ -n "${{ steps.webkit.outputs.path }}" ]; then
-            WEBKIT_FLAG="--add-data ${{ steps.webkit.outputs.path }}:playwright-browsers/${{ steps.webkit.outputs.name }}"
-          fi
           # shellcheck disable=SC2086
           pyinstaller --noconfirm --onedir --windowed --name "HD-Tracker" \
             --icon icon.icns \
@@ -90,9 +73,9 @@ jobs:
             --add-data "watchlist.txt:." \
             --add-data "icon.ico:." \
             --add-data "version.txt:." \
-            $WEBKIT_FLAG \
             --collect-all greenlet \
             --collect-all playwright \
+            --collect-all certifi \
             src/mac_app.py
 
       - name: Configure app bundle
@@ -135,42 +118,39 @@ jobs:
           pip install -r requirements.txt
 
       - name: Install Playwright WebKit
-        run: |
-          venv\Scripts\activate
-          playwright install webkit
-
-      - name: Find WebKit path
-        id: webkit
         shell: pwsh
         run: |
-          $cache = "$env:USERPROFILE\AppData\Local\ms-playwright"
-          $webkit = Get-ChildItem -Path $cache -Filter "webkit-*" -Directory |
-                    Sort-Object Name | Select-Object -Last 1
-          if ($webkit) {
-            echo "path=$($webkit.FullName)" >> $env:GITHUB_OUTPUT
-            echo "name=$($webkit.Name)" >> $env:GITHUB_OUTPUT
-          } else {
-            echo "path=" >> $env:GITHUB_OUTPUT
-            echo "name=" >> $env:GITHUB_OUTPUT
-          }
+          venv\Scripts\Activate.ps1
+          playwright install webkit
 
       - name: Build HD-Tracker.exe
-        shell: cmd
+        shell: pwsh
         run: |
-          call venv\Scripts\activate.bat
-          set WEBKIT_FLAG=
-          if not "%{{ steps.webkit.outputs.path }}%"=="" (
-            set WEBKIT_FLAG=--add-data "%{{ steps.webkit.outputs.path }};playwright-browsers\%{{ steps.webkit.outputs.name }}%"
+          . venv\Scripts\Activate.ps1
+          $cache = Join-Path $env:USERPROFILE "AppData\Local\ms-playwright"
+          $webkit = Get-ChildItem -Path $cache -Filter "webkit-*" -Directory -ErrorAction SilentlyContinue |
+                    Sort-Object Name | Select-Object -Last 1
+          $pyiArgs = @(
+            "--noconfirm", "--onedir", "--windowed",
+            "--name", "HD-Tracker",
+            "--icon", "icon.ico",
+            "--add-data", "config.yaml;.",
+            "--add-data", "watchlist.txt;.",
+            "--add-data", "icon.ico;.",
+            "--add-data", "version.txt;.",
+            "--collect-all", "greenlet",
+            "--collect-all", "playwright",
+            "--collect-all", "certifi",
+            "src\tray_app.py"
           )
-          pyinstaller --noconfirm --onedir --windowed --name "HD-Tracker" --icon icon.ico ^
-            --add-data "config.yaml;." ^
-            --add-data "watchlist.txt;." ^
-            --add-data "icon.ico;." ^
-            --add-data "version.txt;." ^
-            %WEBKIT_FLAG% ^
-            --collect-all greenlet ^
-            --collect-all playwright ^
-            src\tray_app.py
+          if ($webkit) {
+            $pyiArgs += "--add-data"
+            $pyiArgs += "$($webkit.FullName);playwright-browsers\$($webkit.Name)"
+            Write-Host "Bundling WebKit: $($webkit.Name)"
+          } else {
+            Write-Host "Warning: WebKit not found, skipping bundle"
+          }
+          & pyinstaller @pyiArgs
 
       - name: Create HD-Tracker.zip
         shell: pwsh

@@ -51,25 +51,9 @@ ICON_FILE="icon.icns"
 [ -f "$ICON_FILE" ] || ICON_FILE="icon_mac.png"
 [ -f "$ICON_FILE" ] || ICON_FILE=""
 
-# ── Playwright webkit ─────────────────────────────────────────────────────────
-echo "Locating Playwright WebKit..."
-WEBKIT_DIR=""
-WEBKIT_FLAG=""
-MS_CACHE="${HOME}/.cache/ms-playwright"
-if [ -d "$MS_CACHE" ]; then
-    WEBKIT_DIR=$(ls -d "${MS_CACHE}/webkit-"* 2>/dev/null | sort -V | tail -1)
-fi
-if [ -n "$WEBKIT_DIR" ] && [ -d "$WEBKIT_DIR" ]; then
-    WEBKIT_NAME=$(basename "$WEBKIT_DIR")
-    WEBKIT_FLAG="--add-data ${WEBKIT_DIR}:playwright-browsers/${WEBKIT_NAME}"
-    echo "Bundling WebKit: $WEBKIT_NAME"
-else
-    echo "Warning: WebKit not found in ~/.cache/ms-playwright"
-    echo "         Run 'playwright install webkit' then rebuild."
-    echo "         The app will fall back to the system playwright cache at runtime."
-fi
-
 # ── PyInstaller ───────────────────────────────────────────────────────────────
+# webkit is NOT bundled — the app installs it automatically on first launch
+# into ~/Library/Application Support/HD-Tracker/browsers/
 echo "Building HD-Tracker.app..."
 
 ICON_FLAG=""
@@ -82,9 +66,9 @@ pyinstaller --noconfirm --onedir --windowed --name "HD-Tracker" \
     --add-data "watchlist.txt:." \
     --add-data "icon.ico:." \
     --add-data "version.txt:." \
-    $WEBKIT_FLAG \
     --collect-all greenlet \
     --collect-all playwright \
+    --collect-all certifi \
     src/mac_app.py
 
 if [ $? -ne 0 ]; then

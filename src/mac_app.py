@@ -1,13 +1,9 @@
-"""HD Clearance Tracker — macOS window app.
-
-A proper GUI window (shows in Dock) that replaces the tray-icon-only approach
-used on Windows. All functionality is in one window: product list, add/remove,
-scheduled checks, Discord alerts.
-"""
+"""HD Clearance Tracker — macOS window app."""
 import asyncio
 import os
 import random
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -15,14 +11,13 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-# ── Frozen-app setup (must run before any network imports) ────────────────────
+# ── Frozen-app setup (must run before any network/playwright imports) ─────────
 if getattr(sys, "frozen", False):
-    _meipass = Path(sys._MEIPASS)
-    # Always set the Playwright browser path so it finds (or clearly errors on)
-    # the bundled webkit binary.
-    os.environ.setdefault(
-        "PLAYWRIGHT_BROWSERS_PATH", str(_meipass / "playwright-browsers")
-    )
+    # Use a user-writable directory for the Playwright browser; we install it
+    # automatically on first launch instead of bundling it in the .app.
+    _browsers_dir = Path.home() / "Library" / "Application Support" / "HD-Tracker" / "browsers"
+    _browsers_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_browsers_dir)
     # Fix SSL certificate verification — PyInstaller loses the system CA bundle.
     try:
         import certifi
@@ -36,7 +31,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from src import db
 from src.config import BUNDLE_DIR, PROJECT_ROOT, _ensure_user_file, load_config, save_config
 from src.logging_setup import setup_logging
 from src.notifier import is_valid_discord_webhook, send_discord_message
@@ -45,7 +39,6 @@ from src.watchlist import InvalidProductUrlError, load_watchlist, normalize_prod
 
 log = setup_logging()
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _fmt_price(cents):
     return f"${cents / 100:.2f}" if cents is not None else "—"
@@ -58,7 +51,48 @@ def _version() -> str:
         return ""
 
 
-# ── Main window ───────────────────────────────────────────────────────────────
+def _ensure_webkit() -> bool:
+    """Install webkit if not already present in PLAYWRIGHT_BROWSERS_PATH."""
+    if not getattr(sys, "frozen", False):
+        return True  # dev mode — assume playwright install webkit was run
+
+    browsers_dir = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""))
+    if not browsers_dir or not browsers_dir.is_dir():
+        return False
+
+    if any(browsers_dir.glob("webkit-*")):
+        log.info("webkit already installed at %s", browsers_dir)
+        return True
+
+    driver = Path(sys._MEIPASS) / "playwright" / "driver" / "playwright"
+    if not driver.exists():
+        log.warning("playwright driver not found in bundle: %s", driver)
+        return False
+
+    try:
+        os.chmod(driver, 0o755)
+    except Exception:
+        pass
+
+    log.info("Installing webkit to %s", browsers_dir)
+    try:
+        env = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(browsers_dir)}
+        result = subprocess.run(
+            [str(driver), "install", "webkit"],
+            env=env,
+            capture_output=True,
+            timeout=300,
+            text=True,
+        )
+        if result.returncode == 0:
+            log.info("webkit installed successfully")
+            return True
+        log.error("webkit install stderr: %s", result.stderr)
+        return False
+    except Exception:
+        log.exception("webkit install failed")
+        return False
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -66,43 +100,67 @@ class App(tk.Tk):
         self._config = load_config()
         ver = _version()
         self.title(f"HD Clearance Tracker{f'  v{ver}' if ver else ''}")
-        self.geometry("640x660")
-        self.minsize(520, 500)
+        self.geometry("640x680")
+        self.minsize(520, 520)
 
         self._running = False
-        self._status_text = tk.StringVar(value="Status: Idle")
+        self._webkit_ready = not getattr(sys, "frozen", False)
+        self._status_text = tk.StringVar(value="Idle")
 
         self._build_ui()
         self._load_products()
         self._start_scheduler()
         self._poll_status()
 
+        if getattr(sys, "frozen", False):
+            threading.Thread(target=self._setup_browser, daemon=True).start()
+
+    def _setup_browser(self):
+        self._set_status("Setting up browser (first run, ~1 min)…", "orange")
+        ok = _ensure_webkit()
+        self._webkit_ready = ok
+        if ok:
+            self._set_status("Idle", "gray")
+        else:
+            self._set_status("Browser setup failed", "red")
+            self.after(0, lambda: messagebox.showwarning(
+                "Browser Setup Failed",
+                "Could not install the WebKit browser component automatically.\n\n"
+                "Open Terminal and run:\n    playwright install webkit\n\n"
+                "Then relaunch the app.",
+                parent=self,
+            ))
+
     # ── UI layout ─────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        P = dict(padx=14, pady=5)
+        # ── Status / header ───────────────────────────────────────────────────
+        hdr = ttk.Frame(self, padding=(16, 14, 16, 0))
+        hdr.pack(fill="x")
 
-        # ── Status bar ────────────────────────────────────────────────────────
-        top = ttk.Frame(self)
-        top.pack(fill="x", **P)
-        ttk.Label(top, textvariable=self._status_text, foreground="gray").pack(side="left")
-        self._run_btn = ttk.Button(top, text="▶  Run Now", command=self._run_now)
+        left = ttk.Frame(hdr)
+        left.pack(side="left", fill="x", expand=True)
+
+        self._status_lbl = ttk.Label(left, textvariable=self._status_text, font=("", 12))
+        self._status_lbl.pack(side="left")
+
+        self._run_btn = ttk.Button(hdr, text="▶  Run Now", command=self._run_now)
         self._run_btn.pack(side="right")
 
-        sched = "Scheduled: " + "  ·  ".join(self._config.schedule_times)
-        ttk.Label(self, text=sched, foreground="gray", font=("", 10)).pack(
-            anchor="w", padx=14, pady=(0, 2)
+        sched_text = "Scheduled: " + "  ·  ".join(self._config.schedule_times)
+        ttk.Label(self, text=sched_text, foreground="#888", font=("", 10)).pack(
+            anchor="w", padx=16, pady=(2, 8)
         )
 
-        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=14, pady=6)
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=16, pady=(0, 10))
 
         # ── Product list ──────────────────────────────────────────────────────
         ttk.Label(self, text="Tracked Products", font=("", 13, "bold")).pack(
-            anchor="w", padx=14, pady=(0, 4)
+            anchor="w", padx=16
         )
 
-        tree_wrap = ttk.Frame(self)
-        tree_wrap.pack(fill="both", expand=True, padx=14, pady=(0, 2))
+        tree_wrap = ttk.Frame(self, padding=(16, 6, 16, 0))
+        tree_wrap.pack(fill="both", expand=True)
 
         cols = ("item", "name", "online", "clearance")
         self._tree = ttk.Treeview(
@@ -110,7 +168,7 @@ class App(tk.Tk):
         )
         for col, heading, width, anchor in [
             ("item",      "Item #",    90,  "w"),
-            ("name",      "Name",      310, "w"),
+            ("name",      "Name",      285, "w"),
             ("online",    "Online",    80,  "e"),
             ("clearance", "Clearance", 95,  "e"),
         ]:
@@ -122,36 +180,36 @@ class App(tk.Tk):
         self._tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        rm_row = ttk.Frame(self)
-        rm_row.pack(fill="x", padx=14, pady=(0, 4))
-        ttk.Button(rm_row, text="Remove selected", command=self._remove_selected).pack(side="right")
+        btn_row = ttk.Frame(self, padding=(16, 4, 16, 0))
+        btn_row.pack(fill="x")
+        ttk.Button(btn_row, text="Remove Selected", command=self._remove_selected).pack(side="right")
 
         # ── Add product ───────────────────────────────────────────────────────
         ttk.Label(
-            self, text="Add product — paste item number or any Home Depot URL:"
-        ).pack(anchor="w", padx=14)
+            self, text="Add product — item number or Home Depot URL:", padding=(16, 6, 16, 0)
+        ).pack(anchor="w")
 
-        add_row = ttk.Frame(self)
-        add_row.pack(fill="x", padx=14, pady=(3, 4))
+        add_row = ttk.Frame(self, padding=(16, 4, 16, 0))
+        add_row.pack(fill="x")
         self._add_var = tk.StringVar()
         entry = ttk.Entry(add_row, textvariable=self._add_var, font=("", 12))
         entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         entry.bind("<Return>", lambda _: self._add_product())
         ttk.Button(add_row, text="Add", command=self._add_product).pack(side="left")
 
-        self._add_msg = ttk.Label(self, text="", foreground="red")
-        self._add_msg.pack(anchor="w", padx=14)
+        self._add_msg = ttk.Label(self, text="", foreground="red", padding=(16, 2, 16, 0))
+        self._add_msg.pack(anchor="w")
 
-        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=14, pady=8)
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=16, pady=10)
 
         # ── Discord alerts ────────────────────────────────────────────────────
         ttk.Label(self, text="Discord Alerts", font=("", 13, "bold")).pack(
-            anchor="w", padx=14, pady=(0, 4)
+            anchor="w", padx=16
         )
-        ttk.Label(self, text="Webhook URL:").pack(anchor="w", padx=14)
 
-        wh_row = ttk.Frame(self)
-        wh_row.pack(fill="x", padx=14, pady=(2, 4))
+        wh_row = ttk.Frame(self, padding=(16, 6, 16, 0))
+        wh_row.pack(fill="x")
+        ttk.Label(wh_row, text="Webhook URL:").pack(side="left", padx=(0, 6))
         self._wh_var = tk.StringVar(value=self._config.alerts.get("discord_webhook_url", ""))
         self._wh_show = tk.BooleanVar(value=False)
         self._wh_entry = ttk.Entry(wh_row, textvariable=self._wh_var, show="*")
@@ -161,22 +219,22 @@ class App(tk.Tk):
             variable=self._wh_show,
             command=lambda: self._wh_entry.configure(show="" if self._wh_show.get() else "*"),
         ).pack(side="left", padx=(0, 6))
-        ttk.Button(wh_row, text="Send test", command=self._test_webhook).pack(side="left")
+        ttk.Button(wh_row, text="Test", command=self._test_webhook).pack(side="left")
 
-        obs_row = ttk.Frame(self)
-        obs_row.pack(fill="x", padx=14, pady=(0, 4))
+        obs_row = ttk.Frame(self, padding=(16, 4, 16, 0))
+        obs_row.pack(fill="x")
         self._obs_var = tk.BooleanVar(value=self._config.alerts.get("observation_only", True))
         ttk.Checkbutton(
             obs_row,
-            text="Observation-only mode (detect price changes but don't send alerts)",
+            text="Observation-only mode (detect changes but don't send alerts)",
             variable=self._obs_var,
         ).pack(side="left")
 
-        footer = ttk.Frame(self)
-        footer.pack(fill="x", padx=14, pady=(2, 14))
+        footer = ttk.Frame(self, padding=(16, 6, 16, 14))
+        footer.pack(fill="x")
         self._alert_msg = ttk.Label(footer, text="", foreground="gray")
         self._alert_msg.pack(side="left")
-        ttk.Button(footer, text="Save settings", command=self._save_alerts).pack(side="right")
+        ttk.Button(footer, text="Save Settings", command=self._save_alerts).pack(side="right")
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
@@ -273,19 +331,26 @@ class App(tk.Tk):
     def _run_now(self):
         if self._running:
             return
+        if not self._webkit_ready:
+            messagebox.showinfo(
+                "Not Ready",
+                "Browser is still being set up. Please wait a moment.",
+                parent=self,
+            )
+            return
         threading.Thread(target=self._do_run_cycle, daemon=True).start()
 
     def _do_run_cycle(self):
         self._running = True
-        self._set_status("Running check...")
+        self._set_status("Running check…", "orange")
         try:
             cfg = load_config()
             asyncio.run(run_cycle(cfg))
-            self._set_status("Last run: OK")
+            self._set_status("Idle", "gray")
             self.after(0, self._load_products)
-        except Exception as e:
+        except Exception:
             log.exception("Run cycle failed")
-            self._set_status(f"Last run failed: {e}")
+            self._set_status("Last check failed — see log for details", "red")
         finally:
             self._running = False
 
@@ -293,10 +358,10 @@ class App(tk.Tk):
         url = self._wh_var.get().strip()
         if not is_valid_discord_webhook(url):
             self._alert_msg.configure(
-                text="Not a valid Discord webhook URL.", foreground="red"
+                text="Enter a valid Discord webhook URL first.", foreground="red"
             )
             return
-        self._alert_msg.configure(text="Sending test...", foreground="gray")
+        self._alert_msg.configure(text="Sending test…", foreground="gray")
         self.update_idletasks()
 
         def _send():
@@ -304,7 +369,7 @@ class App(tk.Tk):
             self.after(
                 0,
                 lambda: self._alert_msg.configure(
-                    text="Test sent!" if ok else "Failed — check the URL and your connection.",
+                    text="Test message sent!" if ok else "Send failed — check URL and connection.",
                     foreground="green" if ok else "red",
                 ),
             )
@@ -315,24 +380,25 @@ class App(tk.Tk):
         url = self._wh_var.get().strip()
         if url and not is_valid_discord_webhook(url):
             messagebox.showerror(
-                "Invalid webhook",
-                "Expected: https://discord.com/api/webhooks/…",
+                "Invalid Webhook URL",
+                "The URL must look like:\nhttps://discord.com/api/webhooks/…",
                 parent=self,
             )
             return
         self._config.alerts["discord_webhook_url"] = url
         self._config.alerts["observation_only"] = self._obs_var.get()
         save_config(self._config)
-        self._alert_msg.configure(text="Saved.", foreground="green")
+        self._alert_msg.configure(text="Settings saved.", foreground="green")
         self.after(2000, lambda: self._alert_msg.configure(text=""))
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
-    def _set_status(self, text: str):
-        self.after(0, lambda: self._status_text.set(f"Status: {text}"))
-        self.after(0, lambda: self._run_btn.configure(
-            state="disabled" if self._running else "normal"
-        ))
+    def _set_status(self, text: str, color: str = "gray"):
+        def _update():
+            self._status_text.set(text)
+            self._status_lbl.configure(foreground=color)
+            self._run_btn.configure(state="disabled" if self._running else "normal")
+        self.after(0, _update)
 
     def _poll_status(self):
         self._run_btn.configure(state="disabled" if self._running else "normal")
@@ -350,6 +416,9 @@ class App(tk.Tk):
         log.info("Scheduler started: %s", self._config.schedule_times)
 
     def _scheduled_run(self):
+        if not self._webkit_ready:
+            log.warning("Skipping scheduled run — browser not ready")
+            return
         cfg = load_config()
         if cfg.jitter_minutes:
             time.sleep(random.uniform(0, cfg.jitter_minutes * 60))

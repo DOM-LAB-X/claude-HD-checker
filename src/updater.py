@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,15 @@ from threading import Thread
 from src.logging_setup import get_logger
 
 log = get_logger()
+
+
+def _ssl_context() -> ssl.SSLContext:
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
 
 GITHUB_REPO = "DOM-LAB-X/claude-HD-checker"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -61,7 +71,7 @@ def check_for_update() -> dict | None:
             GITHUB_API_URL,
             headers={"Accept": "application/vnd.github+json", "User-Agent": "HD-Tracker"},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_ssl_context()) as resp:
             data = json.loads(resp.read())
 
         tag = data.get("tag_name", "")
@@ -148,7 +158,13 @@ def apply_update(on_progress=None) -> None:
         zip_path = tmp_dir / "update.zip"
         if on_progress:
             on_progress("Downloading update...")
-        urllib.request.urlretrieve(_update_info["download_url"], zip_path)
+        dl_req = urllib.request.Request(
+            _update_info["download_url"],
+            headers={"User-Agent": "HD-Tracker"},
+        )
+        with urllib.request.urlopen(dl_req, timeout=120, context=_ssl_context()) as resp:
+            with open(zip_path, "wb") as f:
+                shutil.copyfileobj(resp, f)
 
         if on_progress:
             on_progress("Extracting update...")

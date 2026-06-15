@@ -1,17 +1,20 @@
-"""Discord webhook alert delivery.
-
-Uses only the standard library (urllib) to avoid adding a dependency. The
-webhook URL is a secret (anyone with it can post to your channel) - it is
-never logged, and is validated to be an actual Discord webhook URL before use
-so a misconfigured value can't send your data somewhere else.
-"""
+"""Discord webhook alert delivery."""
 import json
+import ssl
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
 ALLOWED_HOSTS = {"discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com"}
 REQUEST_TIMEOUT_SEC = 10
+
+
+def _ssl_context() -> ssl.SSLContext:
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
 def is_valid_discord_webhook(url: str) -> bool:
@@ -26,13 +29,8 @@ def is_valid_discord_webhook(url: str) -> bool:
 
 
 def send_discord_message(webhook_url: str, content: str) -> bool:
-    """Post a message to a Discord webhook. Returns True on success.
-
-    Never raises - logs a generic failure message (without the webhook URL)
-    and returns False so a notification failure can't crash a check cycle.
-    """
+    """Post a message to a Discord webhook. Returns True on success."""
     if not is_valid_discord_webhook(webhook_url):
-        print("Discord alert skipped: webhook URL is missing or not a valid Discord webhook URL.")
         return False
 
     payload = json.dumps({"content": content[:2000]}).encode("utf-8")
@@ -43,7 +41,7 @@ def send_discord_message(webhook_url: str, content: str) -> bool:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC, context=_ssl_context()) as resp:
             return 200 <= resp.status < 300
     except urllib.error.URLError as e:
         print(f"Discord alert failed: {e}")
