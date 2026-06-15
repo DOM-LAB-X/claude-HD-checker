@@ -32,12 +32,20 @@ import tkinter as tk
 import pystray
 from PIL import Image
 
-# When bundled with PyInstaller, point Playwright at the bundled webkit binary
-# (included in the bundle via --add-data in the build scripts).
+# When bundled with PyInstaller, fix paths that the frozen app can't find on its own.
 if getattr(sys, "frozen", False):
+    # Point Playwright at the bundled webkit binary.
     _bundled_browsers = Path(sys._MEIPASS) / "playwright-browsers"
     if _bundled_browsers.exists():
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_bundled_browsers))
+    # Fix SSL certificate verification: PyInstaller on macOS loses access to the
+    # system CA bundle. certifi ships its own bundle that works everywhere.
+    try:
+        import certifi
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+    except ImportError:
+        pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
