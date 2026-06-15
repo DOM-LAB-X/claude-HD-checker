@@ -16,8 +16,6 @@ echo "Installing dependencies..."
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
-# pystray on macOS requires PyObjC (AppKit + Quartz)
-pip install pyobjc-framework-Quartz pyobjc-framework-AppKit
 
 echo "Installing WebKit browser for Playwright..."
 playwright install webkit

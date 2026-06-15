@@ -29,7 +29,6 @@ jobs:
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyobjc-framework-Quartz pyobjc-framework-AppKit
 
       - name: Install Playwright WebKit
         run: |
