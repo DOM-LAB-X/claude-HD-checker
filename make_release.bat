@@ -2,68 +2,48 @@
 cd /d "%~dp0"
 
 echo ============================================================
-echo HD Clearance Tracker - Release builder
+echo  HD Clearance Tracker - Release (Windows)
 echo ============================================================
 echo.
 
-if not exist "venv\Scripts\activate.bat" (
-    echo ERROR: Virtual environment not found. Run setup.bat first.
-    pause
-    exit /b 1
-)
-
-set /p VERSION=Enter version number (e.g. 1.0.1):
+set /p CURRENT=<version.txt
+echo Current version: %CURRENT%
+echo.
+set /p VERSION=Enter new version (e.g. 1.0.1):
 if "%VERSION%"=="" (
     echo ERROR: Version cannot be empty.
     pause
     exit /b 1
 )
 
+set TAG=v%VERSION%
+
+echo.
+echo Updating version.txt to %VERSION%...
 echo %VERSION%> version.txt
-echo Version set to %VERSION%.
 
-echo.
-echo Building exe...
-call venv\Scripts\activate.bat
-pyinstaller --noconfirm --onedir --windowed --name "HD-Tracker" --icon icon.ico ^
-    --add-data "config.yaml;." ^
-    --add-data "watchlist.txt;." ^
-    --add-data "icon.ico;." ^
-    --add-data "version.txt;." ^
-    --collect-all greenlet ^
-    --collect-all playwright ^
-    src\tray_app.py
+echo Committing version bump...
+git add version.txt
+git commit -m "Release %TAG%"
 
-if errorlevel 1 (
-    echo Build failed - see errors above.
-    pause
-    exit /b 1
-)
+echo Tagging %TAG%...
+git tag %TAG%
 
-echo.
-echo Zipping release...
-if exist "HD-Tracker.zip" del "HD-Tracker.zip"
-powershell -Command "Compress-Archive -Path 'dist\HD-Tracker' -DestinationPath 'HD-Tracker.zip'"
-
-if errorlevel 1 (
-    echo Zip failed.
-    pause
-    exit /b 1
-)
+echo Pushing to GitHub...
+git push origin main
+git push origin %TAG%
 
 echo.
 echo ============================================================
-echo Release built: HD-Tracker.zip
+echo  Tag %TAG% pushed.
+echo  GitHub Actions will now:
+echo    1. Build HD-Tracker.app  (macOS)
+echo    2. Build HD-Tracker.exe  (Windows)
+echo    3. Publish a GitHub Release with both zips
+echo.
+echo  Track progress:
+echo  https://github.com/DOM-LAB-X/claude-HD-checker/actions
 echo ============================================================
 echo.
-echo Next steps:
-echo  1. Commit and push your changes to GitHub
-echo  2. Go to: https://github.com/DOM-LAB-X/claude-HD-checker/releases/new
-echo  3. Tag: v%VERSION%
-echo  4. Attach: HD-Tracker.zip  (from this folder)
-echo  5. Publish the release
-echo.
-echo The app will notify users to update automatically.
-echo.
-start "" "https://github.com/DOM-LAB-X/claude-HD-checker/releases/new"
+start "" "https://github.com/DOM-LAB-X/claude-HD-checker/actions"
 pause

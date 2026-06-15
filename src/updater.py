@@ -1,12 +1,15 @@
 """Auto-update checker for HD Clearance Tracker.
 
 Checks the GitHub Releases API for a newer version. When one is found,
-downloads the release zip, extracts it to a temp directory, writes a bat
-script that replaces the current install and relaunches the app.
+downloads the release zip, extracts it to a temp directory, then launches
+a small platform-specific updater script that replaces the running app and
+relaunches it.
 
-Only active when running as a frozen PyInstaller exe (sys.frozen == True).
+Only active when running as a frozen PyInstaller bundle (sys.frozen == True).
 """
 import json
+import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -22,7 +25,13 @@ log = get_logger()
 
 GITHUB_REPO = "DOM-LAB-X/claude-HD-checker"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-RELEASE_ASSET_NAME = "HD-Tracker.zip"
+
+# Platform-specific release asset names must match what GitHub Actions uploads.
+_ASSET_NAMES = {
+    "Darwin": "HD-Tracker-mac.zip",
+    "Windows": "HD-Tracker.zip",
+}
+RELEASE_ASSET_NAME = _ASSET_NAMES.get(platform.system(), "HD-Tracker.zip")
 
 _update_info: dict | None = None
 
@@ -45,7 +54,7 @@ def get_pending_update() -> dict | None:
 
 
 def check_for_update() -> dict | None:
-    """Return {"version": "v1.x.x", "download_url": "..."} if newer release exists."""
+    """Return {"version": "v1.x.x", "download_url": "..."} if a newer release exists."""
     global _update_info
     try:
         req = urllib.request.Request(
@@ -73,8 +82,8 @@ def check_for_update() -> dict | None:
 def start_background_check(on_update_found):
     """Spawn a daemon thread to check for updates.
 
-    Calls on_update_found(version_str) on the background thread if a newer
-    release is available. No-op when not running as a packaged exe.
+    Calls on_update_found(version_str) if a newer release is available.
+    No-op when not running as a packaged exe/app.
     """
     if not getattr(sys, "frozen", False):
         return
@@ -87,16 +96,52 @@ def start_background_check(on_update_found):
     Thread(target=_check, daemon=True).start()
 
 
+def _apply_windows(install_dir: Path, tmp_dir: Path, new_files: Path) -> None:
+    updater_bat = install_dir / "_updater.bat"
+    updater_bat.write_text(
+        "@echo off\r\n"
+        "timeout /t 3 /nobreak >nul\r\n"
+        f'robocopy "{new_files}" "{install_dir}" /E /IS /IT /NFL /NDL /NJH /NJS'
+        " /XD data /XF config.yaml /XF watchlist.txt\r\n"
+        f'rd /s /q "{tmp_dir}"\r\n'
+        f'start "" "{install_dir / "HD-Tracker.exe"}"\r\n'
+        'del "%~f0"\r\n',
+        encoding="utf-8",
+    )
+    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen(["cmd.exe", "/c", str(updater_bat)], creationflags=no_window)
+
+
+def _apply_mac(app_bundle: Path, install_dir: Path, tmp_dir: Path, extract_dir: Path) -> None:
+    # The zip should contain HD-Tracker.app at its root.
+    new_app = extract_dir / "HD-Tracker.app"
+    if not new_app.exists():
+        new_app = extract_dir  # fallback: zip root is already the .app
+
+    updater_sh = tmp_dir / "_updater.sh"
+    updater_sh.write_text(
+        "#!/bin/bash\n"
+        "sleep 3\n"
+        f'rm -rf "{app_bundle}"\n'
+        f'cp -rf "{new_app}" "{install_dir}/"\n'
+        f'open "{install_dir}/HD-Tracker.app"\n'
+        f'rm -rf "{tmp_dir}"\n'
+        'rm -- "$0"\n',
+        encoding="utf-8",
+    )
+    os.chmod(updater_sh, 0o755)
+    subprocess.Popen(["bash", str(updater_sh)])
+
+
 def apply_update(on_progress=None) -> None:
-    """Download the release zip and hand off to an external updater bat.
+    """Download the release zip and hand off to a platform updater script.
 
     Raises on failure. The caller should quit the app after this returns so
-    the updater bat can replace the exe files without them being locked.
+    the updater script can replace files without them being locked.
     """
     if not _update_info:
         raise RuntimeError("No pending update.")
 
-    install_dir = Path(sys.executable).resolve().parent
     tmp_dir = Path(tempfile.mkdtemp(prefix="hd-tracker-upd-"))
 
     try:
@@ -111,31 +156,17 @@ def apply_update(on_progress=None) -> None:
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(extract_dir)
 
-        # Release zip should contain an HD-Tracker/ subdirectory.
-        new_files = extract_dir / "HD-Tracker"
-        if not new_files.exists():
-            new_files = extract_dir  # fallback: files are at zip root
-
-        # Write the updater bat next to the exe.  It waits for the app to
-        # exit, copies new files over (preserving user data), relaunches,
-        # then deletes itself and the temp dir.
-        updater_bat = install_dir / "_updater.bat"
-        updater_bat.write_text(
-            "@echo off\r\n"
-            "timeout /t 3 /nobreak >nul\r\n"
-            f'robocopy "{new_files}" "{install_dir}" /E /IS /IT /NFL /NDL /NJH /NJS'
-            " /XD data /XF config.yaml /XF watchlist.txt\r\n"
-            f'rd /s /q "{tmp_dir}"\r\n'
-            f'start "" "{install_dir / "HD-Tracker.exe"}"\r\n'
-            'del "%~f0"\r\n',
-            encoding="utf-8",
-        )
-
-        no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.Popen(
-            ["cmd.exe", "/c", str(updater_bat)],
-            creationflags=no_window,
-        )
+        if platform.system() == "Darwin":
+            # sys.executable: HD-Tracker.app/Contents/MacOS/HD-Tracker
+            app_bundle = Path(sys.executable).resolve().parent.parent.parent
+            install_dir = app_bundle.parent
+            _apply_mac(app_bundle, install_dir, tmp_dir, extract_dir)
+        else:
+            install_dir = Path(sys.executable).resolve().parent
+            new_files = extract_dir / "HD-Tracker"
+            if not new_files.exists():
+                new_files = extract_dir
+            _apply_windows(install_dir, tmp_dir, new_files)
 
     except Exception:
         log.exception("Failed to apply update")

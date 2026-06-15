@@ -5,3 +5,9 @@ build/
 dist/
 *.spec
 .claude/
+# Generated during macOS builds
+icon.icns
+icon_mac.png
+HD-Tracker-mac.zip
+HD-Tracker.zip
+*.log

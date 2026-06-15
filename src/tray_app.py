@@ -2,10 +2,11 @@
 
 Runs the 3x/day scheduled price-check cycle in the background and shows a
 tray icon with quick actions (run now, settings, open data folder, quit).
-This is the entry point used when packaged into a Windows .exe via
-build_exe.bat.
+This is the entry point used when packaged into a Windows .exe or macOS .app
+via build_exe.bat / build_mac.sh.
 """
 import asyncio
+import os
 import platform
 import random
 import subprocess
@@ -14,6 +15,13 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
+
+# When bundled with PyInstaller, point Playwright at the bundled webkit binary
+# (included in the bundle via --add-data in the build scripts).
+if getattr(sys, "frozen", False):
+    _bundled_browsers = Path(sys._MEIPASS) / "playwright-browsers"
+    if _bundled_browsers.exists():
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_bundled_browsers))
 
 import pystray
 from PIL import Image

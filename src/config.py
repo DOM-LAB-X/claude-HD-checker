@@ -1,3 +1,4 @@
+import platform
 import shutil
 import sys
 from pathlib import Path
@@ -42,11 +43,16 @@ class Config(BaseModel):
 
 
 if getattr(sys, "frozen", False):
-    # Running as a PyInstaller --onefile exe: __file__ paths point into a
-    # temporary extraction folder, so user-editable files (config, watchlist,
-    # database) must live next to the exe instead.
-    PROJECT_ROOT = Path(sys.executable).resolve().parent
     BUNDLE_DIR = Path(sys._MEIPASS)
+    if platform.system() == "Darwin":
+        # sys.executable lives at HD-Tracker.app/Contents/MacOS/HD-Tracker.
+        # Walk up past MacOS/ → Contents/ → HD-Tracker.app/ to get the folder
+        # that contains the .app bundle, so user data sits next to it (not
+        # inside the bundle where updates would overwrite it).
+        PROJECT_ROOT = Path(sys.executable).resolve().parent.parent.parent.parent
+    else:
+        # Windows: exe is directly in the install folder.
+        PROJECT_ROOT = Path(sys.executable).resolve().parent
 else:
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
     BUNDLE_DIR = PROJECT_ROOT

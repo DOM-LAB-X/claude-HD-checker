@@ -1,0 +1,247 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v1.0.1) — must already exist"
+        required: true
+
+jobs:
+  # ── macOS build ─────────────────────────────────────────────────────────────
+  build-mac:
+    name: Build macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyobjc-framework-Quartz pyobjc-framework-AppKit
+
+      - name: Install Playwright WebKit
+        run: |
+          source venv/bin/activate
+          playwright install webkit
+
+      - name: Generate icon.icns
+        run: |
+          source venv/bin/activate
+          python3 - <<'PYEOF'
+          import sys
+          from pathlib import Path
+          try:
+              from PIL import Image
+              img = Image.open("icon.ico").convert("RGBA")
+              img.save("/tmp/hd_icon_src.png", "PNG")
+          except Exception as e:
+              print(f"Falling back to generated icon: {e}")
+              from PIL import Image, ImageDraw
+              size = 512
+              img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+              draw = ImageDraw.Draw(img)
+              draw.ellipse([20, 20, size-20, size-20], fill=(255, 140, 0, 255))
+              draw.text((size//2, size//2), "HD", fill=(255,255,255,255), anchor="mm")
+              img.save("/tmp/hd_icon_src.png", "PNG")
+          PYEOF
+
+          mkdir -p /tmp/hd_icon.iconset
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size /tmp/hd_icon_src.png \
+              --out "/tmp/hd_icon.iconset/icon_${size}x${size}.png" >/dev/null 2>&1 || true
+            double=$((size * 2))
+            if [ $double -le 1024 ]; then
+              sips -z $double $double /tmp/hd_icon_src.png \
+                --out "/tmp/hd_icon.iconset/icon_${size}x${size}@2x.png" >/dev/null 2>&1 || true
+            fi
+          done
+          iconutil -c icns /tmp/hd_icon.iconset -o icon.icns || cp /tmp/hd_icon_src.png icon.icns
+
+      - name: Find WebKit path
+        id: webkit
+        run: |
+          MS_CACHE="${HOME}/.cache/ms-playwright"
+          WEBKIT_DIR=$(ls -d "${MS_CACHE}/webkit-"* 2>/dev/null | sort -V | tail -1)
+          echo "path=${WEBKIT_DIR}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$WEBKIT_DIR")" >> "$GITHUB_OUTPUT"
+
+      - name: Build HD-Tracker.app
+        run: |
+          source venv/bin/activate
+          WEBKIT_FLAG=""
+          if [ -n "${{ steps.webkit.outputs.path }}" ]; then
+            WEBKIT_FLAG="--add-data ${{ steps.webkit.outputs.path }}:playwright-browsers/${{ steps.webkit.outputs.name }}"
+          fi
+          # shellcheck disable=SC2086
+          pyinstaller --noconfirm --onedir --windowed --name "HD-Tracker" \
+            --icon icon.icns \
+            --add-data "config.yaml:." \
+            --add-data "watchlist.txt:." \
+            --add-data "icon.ico:." \
+            --add-data "version.txt:." \
+            $WEBKIT_FLAG \
+            --collect-all greenlet \
+            --collect-all playwright \
+            --hidden-import "pystray._darwin" \
+            --hidden-import "Quartz" \
+            --hidden-import "AppKit" \
+            src/tray_app.py
+
+      - name: Configure app bundle
+        run: |
+          PLIST="dist/HD-Tracker.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.domlab.hd-tracker" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.domlab.hd-tracker" "$PLIST" 2>/dev/null || true
+
+      - name: Create HD-Tracker-mac.zip
+        run: |
+          cd dist
+          zip -r ../HD-Tracker-mac.zip HD-Tracker.app
+          cd ..
+          echo "Mac zip size: $(du -sh HD-Tracker-mac.zip | cut -f1)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-build
+          path: HD-Tracker-mac.zip
+          retention-days: 1
+
+  # ── Windows build ────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          venv\Scripts\activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright WebKit
+        run: |
+          venv\Scripts\activate
+          playwright install webkit
+
+      - name: Find WebKit path
+        id: webkit
+        shell: pwsh
+        run: |
+          $cache = "$env:USERPROFILE\AppData\Local\ms-playwright"
+          $webkit = Get-ChildItem -Path $cache -Filter "webkit-*" -Directory |
+                    Sort-Object Name | Select-Object -Last 1
+          if ($webkit) {
+            echo "path=$($webkit.FullName)" >> $env:GITHUB_OUTPUT
+            echo "name=$($webkit.Name)" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "path=" >> $env:GITHUB_OUTPUT
+            echo "name=" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build HD-Tracker.exe
+        shell: cmd
+        run: |
+          call venv\Scripts\activate.bat
+          set WEBKIT_FLAG=
+          if not "%{{ steps.webkit.outputs.path }}%"=="" (
+            set WEBKIT_FLAG=--add-data "%{{ steps.webkit.outputs.path }};playwright-browsers\%{{ steps.webkit.outputs.name }}%"
+          )
+          pyinstaller --noconfirm --onedir --windowed --name "HD-Tracker" --icon icon.ico ^
+            --add-data "config.yaml;." ^
+            --add-data "watchlist.txt;." ^
+            --add-data "icon.ico;." ^
+            --add-data "version.txt;." ^
+            %WEBKIT_FLAG% ^
+            --collect-all greenlet ^
+            --collect-all playwright ^
+            src\tray_app.py
+
+      - name: Create HD-Tracker.zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\HD-Tracker -DestinationPath HD-Tracker.zip
+          $size = (Get-Item HD-Tracker.zip).Length / 1MB
+          Write-Host "Windows zip size: $([math]::Round($size, 1)) MB"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: HD-Tracker.zip
+          retention-days: 1
+
+  # ── Create GitHub Release ─────────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "tag=${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}" >> "$GITHUB_OUTPUT"
+
+      - name: Download mac build
+        uses: actions/download-artifact@v4
+        with:
+          name: mac-build
+
+      - name: Download windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: HD Clearance Tracker ${{ steps.version.outputs.tag }}
+          body: |
+            ## HD Clearance Tracker ${{ steps.version.outputs.tag }}
+
+            ### Installation
+
+            **macOS**
+            1. Download `HD-Tracker-mac.zip` and unzip it.
+            2. Move `HD-Tracker.app` anywhere (Desktop, Applications, etc.).
+            3. Right-click → Open (first launch only, to bypass Gatekeeper).
+            4. The app runs in your menu bar — no Dock icon.
+
+            **Windows**
+            1. Download `HD-Tracker.zip` and unzip it.
+            2. Run `HD-Tracker.exe` inside the `HD-Tracker` folder.
+            3. The app runs in your system tray.
+
+            ### Updating
+            The app checks for updates automatically and will notify you when a
+            new version is available. Click the tray/menu-bar icon to install.
+          files: |
+            HD-Tracker-mac.zip
+            HD-Tracker.zip
+          draft: false
+          prerelease: false
