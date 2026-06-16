@@ -1,9 +1,12 @@
 """Discord webhook alert delivery."""
 import json
+import logging
 import ssl
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
+
+log = logging.getLogger("hd_tracker")
 
 ALLOWED_HOSTS = {"discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com"}
 REQUEST_TIMEOUT_SEC = 10
@@ -42,7 +45,13 @@ def send_discord_message(webhook_url: str, content: str) -> bool:
     )
     try:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC, context=_ssl_context()) as resp:
-            return 200 <= resp.status < 300
+            if 200 <= resp.status < 300:
+                return True
+            log.error("Discord webhook returned HTTP %d", resp.status)
+            return False
+    except urllib.error.HTTPError as e:
+        log.error("Discord webhook HTTP error %d: %s", e.code, e.reason)
+        return False
     except urllib.error.URLError as e:
-        print(f"Discord alert failed: {e}")
+        log.error("Discord webhook failed: %s", e)
         return False

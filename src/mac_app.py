@@ -366,8 +366,13 @@ class App(tk.Tk):
     def _test_webhook(self):
         url = self._wh_var.get().strip()
         if not is_valid_discord_webhook(url):
-            self._alert_msg.configure(
-                text="Enter a valid Discord webhook URL first.", foreground="red"
+            messagebox.showerror(
+                "Invalid Webhook URL",
+                "The URL doesn't look like a Discord webhook.\n\n"
+                "It should start with:\n"
+                "  https://discord.com/api/webhooks/…\n\n"
+                "Copy it from Discord: Server Settings → Integrations → Webhooks.",
+                parent=self,
             )
             return
         self._alert_msg.configure(text="Sending test…", foreground="gray")
@@ -375,13 +380,18 @@ class App(tk.Tk):
 
         def _send():
             ok = send_discord_message(url, "HD Clearance Tracker: test alert ✓")
-            self.after(
-                0,
-                lambda: self._alert_msg.configure(
-                    text="Test message sent!" if ok else "Send failed — check URL and connection.",
-                    foreground="green" if ok else "red",
-                ),
-            )
+            if ok:
+                self.after(0, lambda: self._alert_msg.configure(
+                    text="Test message sent!", foreground="green"
+                ))
+            else:
+                self.after(0, lambda: messagebox.showerror(
+                    "Send Failed",
+                    "Could not send the test message.\n\n"
+                    "Check the log file for the exact error — look for 'Discord webhook'.",
+                    parent=self,
+                ))
+                self.after(0, lambda: self._alert_msg.configure(text="", foreground="gray"))
 
         threading.Thread(target=_send, daemon=True).start()
 
