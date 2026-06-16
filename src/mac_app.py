@@ -153,7 +153,7 @@ class App(tk.Tk):
         self._status_lbl = ttk.Label(left, textvariable=self._status_text, font=("", 12))
         self._status_lbl.pack(side="left")
 
-        self._run_btn = ttk.Button(hdr, text="▶  Run Now", command=self._run_now)
+        self._run_btn = ttk.Button(hdr, text="▶  Run All", command=self._run_all)
         self._run_btn.pack(side="right")
 
         sched_text = "Scheduled: " + "  ·  ".join(self._config.schedule_times)
@@ -173,7 +173,7 @@ class App(tk.Tk):
 
         cols = ("item", "name", "online", "clearance")
         self._tree = ttk.Treeview(
-            tree_wrap, columns=cols, show="headings", selectmode="browse", height=8
+            tree_wrap, columns=cols, show="headings", selectmode="extended", height=8
         )
         for col, heading, width, anchor in [
             ("item",      "Item #",    90,  "w"),
@@ -188,10 +188,15 @@ class App(tk.Tk):
         self._tree.configure(yscrollcommand=vsb.set)
         self._tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+        self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
         btn_row = ttk.Frame(self, padding=(16, 4, 16, 0))
         btn_row.pack(fill="x")
         ttk.Button(btn_row, text="Remove Selected", command=self._remove_selected).pack(side="right")
+        self._run_sel_btn = ttk.Button(
+            btn_row, text="▶  Run Selected", command=self._run_selected, state="disabled"
+        )
+        self._run_sel_btn.pack(side="right", padx=(0, 8))
 
         # ── Add product ───────────────────────────────────────────────────────
         ttk.Label(
@@ -337,7 +342,16 @@ class App(tk.Tk):
         write_watchlist(wl_path, [e.url for e in entries if e.internet_number != item_id])
         self._load_products()
 
-    def _run_now(self):
+    def _run_all(self):
+        self._start_run(item_numbers=None)
+
+    def _run_selected(self):
+        sel = list(self._tree.selection())
+        if not sel:
+            return
+        self._start_run(item_numbers=sel)
+
+    def _start_run(self, item_numbers=None):
         if self._running:
             return
         if not self._webkit_ready:
@@ -347,14 +361,20 @@ class App(tk.Tk):
                 parent=self,
             )
             return
-        threading.Thread(target=self._do_run_cycle, daemon=True).start()
+        threading.Thread(
+            target=self._do_run_cycle, kwargs={"item_numbers": item_numbers}, daemon=True
+        ).start()
 
-    def _do_run_cycle(self):
+    def _do_run_cycle(self, item_numbers=None):
         self._running = True
-        self._set_status("Running check…", "orange")
+        if item_numbers:
+            label = f"Running {len(item_numbers)} item{'s' if len(item_numbers) != 1 else ''}…"
+        else:
+            label = "Running check…"
+        self._set_status(label, "orange")
         try:
             cfg = load_config()
-            asyncio.run(run_cycle(cfg))
+            asyncio.run(run_cycle(cfg, item_numbers=item_numbers))
             self._set_status("Idle", "gray")
             self.after(0, self._load_products)
         except Exception:
@@ -412,15 +432,28 @@ class App(tk.Tk):
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
+    def _on_tree_select(self, *_):
+        has_sel = bool(self._tree.selection())
+        self._run_sel_btn.configure(
+            state="normal" if has_sel and not self._running else "disabled"
+        )
+
     def _set_status(self, text: str, color: str = "gray"):
         def _update():
             self._status_text.set(text)
             self._status_lbl.configure(foreground=color)
-            self._run_btn.configure(state="disabled" if self._running else "normal")
+            self._sync_buttons()
         self.after(0, _update)
 
-    def _poll_status(self):
+    def _sync_buttons(self):
         self._run_btn.configure(state="disabled" if self._running else "normal")
+        has_sel = bool(self._tree.selection())
+        self._run_sel_btn.configure(
+            state="normal" if has_sel and not self._running else "disabled"
+        )
+
+    def _poll_status(self):
+        self._sync_buttons()
         self.after(1500, self._poll_status)
 
     def _start_scheduler(self):

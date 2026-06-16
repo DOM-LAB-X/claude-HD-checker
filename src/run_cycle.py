@@ -13,10 +13,12 @@ from src.price_checker import PARSER_VERSION, check_product_in_context, store_se
 from src.watchlist import load_watchlist
 
 
-async def run_cycle(config=None):
+async def run_cycle(config=None, item_numbers: list | None = None):
     config = config or load_config()
     conn = db.connect(str(PROJECT_ROOT / config.db_path))
     watchlist = load_watchlist(str(_ensure_user_file(config.watchlist_path)))
+    if item_numbers:
+        watchlist = [e for e in watchlist if e.internet_number in item_numbers]
 
     product_ids = {}
     for entry in watchlist:
