@@ -13,7 +13,7 @@ from src.price_checker import PARSER_VERSION, check_product_in_context, store_se
 from src.watchlist import load_watchlist
 
 
-async def run_cycle(config=None, item_numbers: list | None = None):
+async def run_cycle(config=None, item_numbers: list | None = None, stop_event=None):
     config = config or load_config()
     conn = db.connect(str(PROJECT_ROOT / config.db_path))
     watchlist = load_watchlist(str(_ensure_user_file(config.watchlist_path)))
@@ -36,6 +36,9 @@ async def run_cycle(config=None, item_numbers: list | None = None):
     random.shuffle(stores)
     print(f"Run order: stores={stores}, products={len(watchlist)}")
 
+    def _cancelled():
+        return stop_event is not None and stop_event.is_set()
+
     run_id = db.start_run(conn)
     products_attempted = 0
     products_succeeded = 0
@@ -43,14 +46,16 @@ async def run_cycle(config=None, item_numbers: list | None = None):
     rate_limited_overall = False
 
     for store_idx, store_id in enumerate(stores):
+        if _cancelled():
+            print("Run cancelled.")
+            break
         print(f"\n=== Store {store_id} ===")
         store_had_error = False
         store_rate_limited = False
 
         async with store_session(store_id, config.zip_code) as context:
             for prod_idx, entry in enumerate(watchlist):
-                if store_rate_limited:
-                    # skip remaining products at this store once rate-limited
+                if _cancelled() or store_rate_limited:
                     break
 
                 result = None
@@ -101,14 +106,14 @@ async def run_cycle(config=None, item_numbers: list | None = None):
                 ):
                     store_had_error = True
 
-                if prod_idx < len(watchlist) - 1 and not store_rate_limited:
+                if prod_idx < len(watchlist) - 1 and not store_rate_limited and not _cancelled():
                     delay = random.uniform(*config.between_products_sec)
                     await asyncio.sleep(delay)
 
         if store_had_error:
             stores_with_errors.append(store_id)
 
-        if store_idx < len(stores) - 1:
+        if store_idx < len(stores) - 1 and not _cancelled():
             delay = random.uniform(*config.between_stores_sec)
             print(f"  (waiting {delay:.1f}s before next store)")
             await asyncio.sleep(delay)

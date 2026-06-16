@@ -113,6 +113,7 @@ class App(tk.Tk):
         self.minsize(520, 520)
 
         self._running = False
+        self._stop_event = None
         self._webkit_ready = not getattr(sys, "frozen", False)
         self._status_text = tk.StringVar(value="Idle")
 
@@ -351,6 +352,11 @@ class App(tk.Tk):
             return
         self._start_run(item_numbers=sel)
 
+    def _stop_run(self):
+        if self._stop_event:
+            self._stop_event.set()
+        self._set_status("Stopping — finishing current item…", "orange")
+
     def _start_run(self, item_numbers=None):
         if self._running:
             return
@@ -361,11 +367,14 @@ class App(tk.Tk):
                 parent=self,
             )
             return
+        self._stop_event = threading.Event()
         threading.Thread(
-            target=self._do_run_cycle, kwargs={"item_numbers": item_numbers}, daemon=True
+            target=self._do_run_cycle,
+            kwargs={"item_numbers": item_numbers, "stop_event": self._stop_event},
+            daemon=True,
         ).start()
 
-    def _do_run_cycle(self, item_numbers=None):
+    def _do_run_cycle(self, item_numbers=None, stop_event=None):
         self._running = True
         if item_numbers:
             label = f"Running {len(item_numbers)} item{'s' if len(item_numbers) != 1 else ''}…"
@@ -374,14 +383,18 @@ class App(tk.Tk):
         self._set_status(label, "orange")
         try:
             cfg = load_config()
-            asyncio.run(run_cycle(cfg, item_numbers=item_numbers))
-            self._set_status("Idle", "gray")
+            asyncio.run(run_cycle(cfg, item_numbers=item_numbers, stop_event=stop_event))
+            if stop_event and stop_event.is_set():
+                self._set_status("Stopped", "gray")
+            else:
+                self._set_status("Idle", "gray")
             self.after(0, self._load_products)
         except Exception:
             log.exception("Run cycle failed")
             self._set_status("Last check failed — see log for details", "red")
         finally:
             self._running = False
+            self._stop_event = None
 
     def _test_webhook(self):
         url = self._wh_var.get().strip()
@@ -446,11 +459,13 @@ class App(tk.Tk):
         self.after(0, _update)
 
     def _sync_buttons(self):
-        self._run_btn.configure(state="disabled" if self._running else "normal")
-        has_sel = bool(self._tree.selection())
-        self._run_sel_btn.configure(
-            state="normal" if has_sel and not self._running else "disabled"
-        )
+        if self._running:
+            self._run_btn.configure(text="⏹  Stop", command=self._stop_run, state="normal")
+            self._run_sel_btn.configure(state="disabled")
+        else:
+            self._run_btn.configure(text="▶  Run All", command=self._run_all, state="normal")
+            has_sel = bool(self._tree.selection())
+            self._run_sel_btn.configure(state="normal" if has_sel else "disabled")
 
     def _poll_status(self):
         self._sync_buttons()
