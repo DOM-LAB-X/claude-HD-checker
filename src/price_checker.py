@@ -8,7 +8,11 @@ from typing import Optional
 
 from playwright.async_api import async_playwright
 
-PARSER_VERSION = "v1"
+from src.logging_setup import get_logger
+
+log = get_logger()
+
+PARSER_VERSION = "v2"
 GRAPHQL_OPNAME = "productClientOnlyProduct"
 
 
@@ -166,8 +170,37 @@ async def check_product_in_context(context, product_url: str, store_id: str) -> 
     if online_price_cents is None:
         return CheckResult(result_state="price_not_exposed", store_verified=True, error_detail="pricing.value missing", **meta)
 
-    clearance = pricing.get("clearance")
-    if not clearance or clearance.get("value") is None:
+    # Log the full pricing block so we can diagnose clearance detection misses.
+    log.info("pricing block: %s", json.dumps(pricing))
+
+    clearance_value = None
+    savings_pct = None
+
+    # Primary path: pricing.clearance
+    cl = pricing.get("clearance") or {}
+    if cl.get("value") is not None:
+        clearance_value = cl["value"]
+        savings_pct = cl.get("percentageOff")
+
+    # Fallback: some in-store clearance items use pricing.specialBuy
+    if clearance_value is None:
+        sb = pricing.get("specialBuy") or {}
+        if sb.get("value") is not None:
+            clearance_value = sb["value"]
+            savings_pct = sb.get("percentageOff")
+
+    # Fallback: pricing.original > pricing.value means a marked-down price
+    if clearance_value is None:
+        orig = pricing.get("original")
+        if orig and orig > (pricing.get("value") or 0):
+            # treat the current value as clearance vs original
+            clearance_value = pricing.get("value")
+            online_price_cents_orig = _to_cents(orig)
+            if online_price_cents_orig:
+                savings_pct = round((1 - clearance_value / orig) * 100, 1)
+                online_price_cents = online_price_cents_orig
+
+    if clearance_value is None:
         return CheckResult(
             result_state="not_currently_clearance",
             online_price_cents=online_price_cents,
@@ -175,9 +208,7 @@ async def check_product_in_context(context, product_url: str, store_id: str) -> 
             **meta,
         )
 
-    clearance_price_cents = _to_cents(clearance["value"])
-    savings_pct = clearance.get("percentageOff")
-
+    clearance_price_cents = _to_cents(clearance_value)
     return CheckResult(
         result_state="clearance_price_found",
         online_price_cents=online_price_cents,
