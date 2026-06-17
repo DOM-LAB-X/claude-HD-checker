@@ -1,12 +1,10 @@
-timezone: Pacific/Honolulu
+timezone: America/New_York
 
 stores:
-  - "1701"
-  - "1702"
-  - "1706"
-  - "1707"
+  - "6911"   # replace with your local Home Depot store numbers
+  - "6926"
 
-zip_code: "96819"
+zip_code: "10001"   # replace with your ZIP code
 
 schedule:
   times: ["01:00", "09:00", "17:00"]   # local time, per `timezone`
@@ -23,8 +21,8 @@ alerts:
   min_savings_pct: 30
   min_savings_amount: 5000   # cents ($50.00)
   inter_store_diff_pct: 15
-  observation_only: true     # if true, detect and log change events but do not send notifications
-  discord_webhook_url: ""    # paste a Discord webhook URL to enable alerts (or set via the app's Settings window)
+  observation_only: true     # set false to enable Discord alerts
+  discord_webhook_url: ""    # paste your Discord webhook URL here, or use the app's Settings
 
 watchlist_path: "watchlist.txt"
 db_path: "data/tracker.sqlite3"

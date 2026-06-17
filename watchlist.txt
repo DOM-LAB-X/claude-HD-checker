@@ -1,2 +1,4 @@
-# One product URL per line. Lines starting with # are ignored.
-https://www.homedepot.com/p/DEWALT-20V-MAX-XR-Lithium-Ion-Cordless-2-1-2-in-15-Gauge-Finish-Nailer-Kit-with-2-0Ah-Battery-Charger-and-Contractor-Bag-DCN650D1/301424967
+# One product URL or item number per line. Lines starting with # are ignored.
+# Examples:
+#   301424967
+#   https://www.homedepot.com/p/some-product/301424967

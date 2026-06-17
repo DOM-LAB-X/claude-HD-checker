@@ -169,12 +169,19 @@ def apply_update(on_progress=None) -> None:
         if on_progress:
             on_progress("Extracting update...")
         extract_dir = tmp_dir / "x"
+        extract_dir.mkdir()
         with zipfile.ZipFile(zip_path, "r") as z:
+            for member in z.infolist():
+                member_path = (extract_dir / member.filename).resolve()
+                if not str(member_path).startswith(str(extract_dir.resolve())):
+                    raise RuntimeError(f"Unsafe path in update zip: {member.filename}")
             z.extractall(extract_dir)
 
         if platform.system() == "Darwin":
             # sys.executable: HD-Tracker.app/Contents/MacOS/HD-Tracker
             app_bundle = Path(sys.executable).resolve().parent.parent.parent
+            if app_bundle.name != "HD-Tracker.app":
+                raise RuntimeError(f"Unexpected app bundle name: {app_bundle.name}")
             install_dir = app_bundle.parent
             _apply_mac(app_bundle, install_dir, tmp_dir, extract_dir)
         else:
