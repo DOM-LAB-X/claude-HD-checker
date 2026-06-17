@@ -132,105 +132,80 @@ async def run_cycle(config=None, item_numbers: list | None = None, stop_event=No
 
     events = detect_changes(conn, config, product_ids, config.stores)
     observation_only = config.alerts.get("observation_only", True)
+
     if events:
         print(f"\n=== Change events ({'observation-only, not sent' if observation_only else 'alerting'}) ===")
         for e in events:
             store_label = f"store {e['store_id']}" if e["store_id"] else "all stores"
             print(f"  [{e['event_type']}] product {e['product_id']} ({store_label}): {e['details']}")
-
-        if not observation_only:
-            send_alerts(conn, config, events)
     else:
         print("\nNo change events detected.")
 
+    if not observation_only:
+        send_run_summary(conn, config, product_ids, events)
+
     conn.close()
-
-
-ALERTABLE_EVENT_TYPES = {"first_clearance", "price_drop", "product_returned", "inter_store_diff"}
 
 
 def _fmt(cents) -> str:
     return f"${cents / 100:.2f}" if cents is not None else "—"
 
 
-def _format_alert(event: dict, name: str, url: str) -> str:
-    t = event["event_type"]
-    store = event.get("store_id")
-    clearance = event.get("new_clearance_price_cents")
-    online = event.get("online_price_cents")
-    old_cl = event.get("old_clearance_price_cents")
-    pct = event.get("savings_pct")
-
-    store_line = f"📍 Store {store}" if store else ""
-    savings_badge = f"  🔥 **{pct:.0f}% off**" if pct else ""
-
-    if t == "first_clearance":
-        price_line = (
-            f"~~{_fmt(online)}~~ → **{_fmt(clearance)}**{savings_badge}"
-            if online else f"**{_fmt(clearance)}**{savings_badge}"
-        )
-        return (
-            f"🏷️ **New Clearance Deal!**\n"
-            f"**{name}**\n"
-            f"{store_line}\n\n"
-            f"{price_line}\n\n"
-            f"🔗 {url}"
-        )
-
-    if t == "price_drop":
-        savings_note = f"  (**{pct:.0f}% off retail**)" if pct else ""
-        return (
-            f"📉 **Price Drop!**\n"
-            f"**{name}**\n"
-            f"{store_line}\n\n"
-            f"~~{_fmt(old_cl)}~~ → **{_fmt(clearance)}**{savings_note}\n\n"
-            f"🔗 {url}"
-        )
-
-    if t == "product_returned":
-        price_line = (
-            f"~~{_fmt(online)}~~ → **{_fmt(clearance)}**{savings_badge}"
-            if online else f"**{_fmt(clearance)}**{savings_badge}"
-        )
-        return (
-            f"🔄 **Back on Clearance!**\n"
-            f"**{name}**\n"
-            f"{store_line}\n\n"
-            f"{price_line}\n\n"
-            f"🔗 {url}"
-        )
-
-    if t == "inter_store_diff":
-        diff_note = f"({pct:.0f}% difference)" if pct else ""
-        return (
-            f"🏪 **Store Price Difference**\n"
-            f"**{name}**\n\n"
-            f"{event['details']}  {diff_note}\n\n"
-            f"🔗 {url}"
-        )
-
-    # fallback
-    return (
-        f"🔔 **HD Clearance Alert**\n"
-        f"**{name}**\n"
-        f"{store_line}\n\n"
-        f"Clearance: **{_fmt(clearance)}**\n"
-        f"{event['details']}\n\n"
-        f"🔗 {url}"
-    )
-
-
-def send_alerts(conn, config, events):
+def send_run_summary(conn, config, product_ids: dict, events: list) -> None:
+    """Send one Discord message per check with all current clearance prices and any change tags."""
     webhook_url = config.alerts.get("discord_webhook_url", "")
     if not webhook_url:
         return
+
+    # Index events by (product_id, store_id) so we can annotate each store line.
+    event_map: dict[tuple, str] = {}
     for e in events:
-        if e["event_type"] not in ALERTABLE_EVENT_TYPES:
+        key = (e["product_id"], e.get("store_id"))
+        t = e["event_type"]
+        if t == "first_clearance":
+            event_map[key] = "🆕"
+        elif t == "price_drop":
+            old = e.get("old_clearance_price_cents")
+            event_map[key] = f"📉 was {_fmt(old)}"
+        elif t == "product_returned":
+            event_map[key] = "🔄 back"
+        elif t == "inter_store_diff":
+            event_map[(e["product_id"], None)] = "🏪 price diff between stores"
+
+    product_sections = []
+    for internet_number, product_id in product_ids.items():
+        product = db.get_product(conn, product_id)
+        if not product:
             continue
-        product = db.get_product(conn, e["product_id"])
-        name = product[1] or product[0] if product else str(e["product_id"])
-        url = product[2] if product else ""
-        send_discord_message(webhook_url, _format_alert(e, name, url))
+        name = (product[1] or internet_number)[:80]
+        url = product[2] or ""
+
+        store_lines = []
+        for store_id in config.stores:
+            rows = db.last_clearance_observations(conn, product_id, store_id, limit=1)
+            if not rows:
+                continue
+            _, online_cents, clearance_cents, savings_pct = rows[0]
+            if not clearance_cents:
+                continue
+            savings_str = f" 🔥 **{savings_pct:.0f}% off**" if savings_pct else ""
+            online_str = f"~~{_fmt(online_cents)}~~ → " if online_cents else ""
+            tag = event_map.get((product_id, store_id), "")
+            tag_str = f"  — {tag}" if tag else ""
+            store_lines.append(
+                f"  📍 Store {store_id}:  {online_str}**{_fmt(clearance_cents)}**{savings_str}{tag_str}"
+            )
+
+        if store_lines:
+            product_sections.append(
+                f"**{name}**\n" + "\n".join(store_lines) + f"\n  🔗 {url}"
+            )
+
+    if not product_sections:
+        return
+
+    content = "🔍 **HD Clearance Check Results**\n\n" + "\n\n".join(product_sections)
+    send_discord_message(webhook_url, content)
 
 
 if __name__ == "__main__":
