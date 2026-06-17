@@ -35,6 +35,7 @@ from src.config import BUNDLE_DIR, PROJECT_ROOT, _ensure_user_file, load_config,
 from src.logging_setup import setup_logging
 from src.notifier import is_valid_discord_webhook, send_discord_message
 from src.run_cycle import run_cycle
+from src.updater import apply_update, start_background_check
 from src.watchlist import InvalidProductUrlError, load_watchlist, normalize_product_input, write_watchlist
 
 log = setup_logging()
@@ -124,6 +125,7 @@ class App(tk.Tk):
 
         if getattr(sys, "frozen", False):
             threading.Thread(target=self._setup_browser, daemon=True).start()
+            start_background_check(self._on_update_found)
 
     def _setup_browser(self):
         self._set_status("Setting up browser (first run, ~1 min)…", "orange")
@@ -159,10 +161,19 @@ class App(tk.Tk):
 
         sched_text = "Scheduled: " + "  ·  ".join(self._config.schedule_times)
         ttk.Label(self, text=sched_text, foreground="#888", font=("", 10)).pack(
-            anchor="w", padx=16, pady=(2, 8)
+            anchor="w", padx=16, pady=(2, 4)
         )
 
-        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=16, pady=(0, 10))
+        # Update banner — always packed but empty until a newer release is found.
+        self._update_frame = ttk.Frame(self, padding=(16, 0, 16, 0))
+        self._update_frame.pack(fill="x")
+        self._update_lbl = ttk.Label(self._update_frame, text="", foreground="#f90")
+        self._update_lbl.pack(side="left")
+        self._update_btn = ttk.Button(
+            self._update_frame, text="Install & Restart", command=self._do_update
+        )
+
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=16, pady=(4, 10))
 
         # ── Product list ──────────────────────────────────────────────────────
         ttk.Label(self, text="Tracked Products", font=("", 13, "bold")).pack(
@@ -444,6 +455,43 @@ class App(tk.Tk):
         self.after(2000, lambda: self._alert_msg.configure(text=""))
 
     # ── Utilities ─────────────────────────────────────────────────────────────
+
+    def _on_update_found(self, version: str):
+        log.info("Update available: %s", version)
+        def _show():
+            self._update_frame.configure(padding=(16, 4, 16, 4))
+            self._update_lbl.configure(text=f"⬇  Version {version} available")
+            self._update_btn.pack(side="left", padx=(10, 0))
+        self.after(0, _show)
+
+    def _do_update(self):
+        if not messagebox.askyesno(
+            "Install Update",
+            "The app will download the update, quit, and relaunch automatically.\n\nInstall now?",
+            parent=self,
+        ):
+            return
+        self._update_btn.configure(state="disabled", text="Downloading…")
+        self.update_idletasks()
+
+        def _apply():
+            try:
+                apply_update(on_progress=lambda msg: self.after(
+                    0, lambda: self._update_btn.configure(text=msg)
+                ))
+                self.after(0, self.on_close)
+            except Exception:
+                log.exception("Update failed")
+                self.after(0, lambda: messagebox.showerror(
+                    "Update Failed",
+                    "Could not install the update. Check the log for details.",
+                    parent=self,
+                ))
+                self.after(0, lambda: self._update_btn.configure(
+                    state="normal", text="Install & Restart"
+                ))
+
+        threading.Thread(target=_apply, daemon=True).start()
 
     def _on_tree_select(self, *_):
         has_sel = bool(self._tree.selection())
