@@ -134,6 +134,9 @@ def _apply_mac(app_bundle: Path, install_dir: Path, tmp_dir: Path, extract_dir: 
         "sleep 3\n"
         f'rm -rf "{app_bundle}"\n'
         f'cp -rf "{new_app}" "{install_dir}/"\n'
+        # Strip Gatekeeper quarantine — without this macOS silently blocks
+        # the launch of an app that was copied from a temp directory.
+        f'xattr -cr "{install_dir}/HD-Tracker.app" 2>/dev/null || true\n'
         f'open "{install_dir}/HD-Tracker.app"\n'
         f'rm -rf "{tmp_dir}"\n'
         'rm -- "$0"\n',

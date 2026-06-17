@@ -35,7 +35,7 @@ from src.config import BUNDLE_DIR, PROJECT_ROOT, _ensure_user_file, load_config,
 from src.logging_setup import setup_logging
 from src.notifier import is_valid_discord_webhook, send_discord_message
 from src.run_cycle import run_cycle
-from src.updater import apply_update, start_background_check
+from src.updater import apply_update, check_for_update
 from src.watchlist import InvalidProductUrlError, load_watchlist, normalize_product_input, write_watchlist
 
 log = setup_logging()
@@ -117,6 +117,7 @@ class App(tk.Tk):
         self._stop_event = None
         self._webkit_ready = not getattr(sys, "frozen", False)
         self._status_text = tk.StringVar(value="Idle")
+        self._notified_version: str | None = None
 
         self._build_ui()
         self._load_products()
@@ -125,7 +126,7 @@ class App(tk.Tk):
 
         if getattr(sys, "frozen", False):
             threading.Thread(target=self._setup_browser, daemon=True).start()
-            start_background_check(self._on_update_found)
+            self._schedule_update_check()
 
     def _setup_browser(self):
         self._set_status("Setting up browser (first run, ~1 min)…", "orange")
@@ -458,10 +459,21 @@ class App(tk.Tk):
 
     def _on_update_found(self, version: str):
         log.info("Update available: %s", version)
+        if self._notified_version == version:
+            return
+        self._notified_version = version
+
         def _show():
             self._update_frame.configure(padding=(16, 4, 16, 4))
             self._update_lbl.configure(text=f"⬇  Version {version} available")
             self._update_btn.pack(side="left", padx=(10, 0))
+            if messagebox.askyesno(
+                "Update Available",
+                f"Version {version} is available.\n\nInstall now and restart?",
+                parent=self,
+            ):
+                self._start_update()
+
         self.after(0, _show)
 
     def _do_update(self):
@@ -471,6 +483,9 @@ class App(tk.Tk):
             parent=self,
         ):
             return
+        self._start_update()
+
+    def _start_update(self):
         self._update_btn.configure(state="disabled", text="Downloading…")
         self.update_idletasks()
 
@@ -492,6 +507,15 @@ class App(tk.Tk):
                 ))
 
         threading.Thread(target=_apply, daemon=True).start()
+
+    def _schedule_update_check(self):
+        def _check():
+            info = check_for_update()
+            if info:
+                self._on_update_found(info["version"])
+
+        threading.Thread(target=_check, daemon=True).start()
+        self.after(4 * 60 * 60 * 1000, self._schedule_update_check)
 
     def _on_tree_select(self, *_):
         has_sel = bool(self._tree.selection())
